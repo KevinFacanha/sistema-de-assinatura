@@ -1,0 +1,59 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Manrope:wght@500;600;700;800&display=swap');
+
+@import './tokens.css';
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  * {
+    @apply border-border-soft;
+  }
+
+  body {
+    @apply m-0 bg-surface-0 font-sans text-sm text-text-strong antialiased;
+  }
+
+  h1,
+  h2,
+  h3,
+  h4 {
+    @apply font-display text-text-strong;
+  }
+
+  button,
+  input,
+  select,
+  textarea {
+    @apply font-sans;
+  }
+}
+
+@layer components {
+  .app-shell {
+    @apply min-h-screen bg-surface-0;
+  }
+
+  .panel {
+    @apply rounded-lg border border-border-soft bg-white shadow-soft;
+  }
+
+  .page-container {
+    @apply mx-auto w-full max-w-[1200px] px-4 py-6 sm:px-6;
+  }
+
+  .page-content {
+    @apply space-y-6;
+  }
+
+  .focus-ring {
+    box-shadow: var(--focus-ring);
+  }
+}
+
+@layer utilities {
+  .bg-gradient-primary {
+    background: var(--gradient-primary);
+  }
+}
