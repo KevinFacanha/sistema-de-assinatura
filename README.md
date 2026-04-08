@@ -43,7 +43,7 @@ O fluxo principal funciona assim:
 
 ## Estrutura do projeto
 
-``bash
+```bash
 src/
   app/
   components/
