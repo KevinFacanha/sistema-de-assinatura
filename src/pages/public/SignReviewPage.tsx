@@ -37,6 +37,7 @@ export function SignReviewPage() {
   const navigate = useNavigate();
   const [payload, setPayload] = useState<PublicReviewResult | null>(null);
   const [documents, setDocuments] = useState<Array<PublicReviewDocument & { fromDatabase: boolean }>>([]);
+  const [documentAvailability, setDocumentAvailability] = useState<Record<string, boolean>>({});
   const [acceptedDocuments, setAcceptedDocuments] = useState<Record<string, boolean>>({});
   const [previewDocumentId, setPreviewDocumentId] = useState<string | null>(null);
   const [previewDocumentUrl, setPreviewDocumentUrl] = useState<string | null>(null);
@@ -50,6 +51,7 @@ export function SignReviewPage() {
   useEffect(() => {
     if (!normalizedToken) return;
     const load = async () => {
+      setDocumentAvailability({});
       try {
         const [requestData, documentsData] = await Promise.all([
           getPublicReviewRequest(normalizedToken),
@@ -81,11 +83,37 @@ export function SignReviewPage() {
 
         setDocuments(mergedDocuments);
 
+        const availabilityEntries = await Promise.all(
+          mergedDocuments.map(async (document) => {
+            if (!document.signed_professional_pdf_path) {
+              return [document.id, false] as const;
+            }
+
+            try {
+              await createSignedDocumentUrl(document.signed_professional_pdf_path, 60);
+              return [document.id, true] as const;
+            } catch {
+              return [document.id, false] as const;
+            }
+          }),
+        );
+        const availabilityByDocument = Object.fromEntries(availabilityEntries);
+        setDocumentAvailability(availabilityByDocument);
+
         const initialAccepted: Record<string, boolean> = {};
         for (const document of mergedDocuments) {
           initialAccepted[document.id] = Boolean(document.consent_accepted_at);
         }
         setAcceptedDocuments(initialAccepted);
+
+        const missingDocuments = mergedDocuments.filter((document) => !availabilityByDocument[document.id]);
+        if (missingDocuments.length > 0) {
+          const missingTitles = missingDocuments.map((document) => `"${document.title}"`).join(', ');
+          setErrorMessage(
+            `Arquivos indisponíveis no Storage para: ${missingTitles}. Solicite nova assinatura profissional antes de continuar.`,
+          );
+          return;
+        }
 
         if (!requestData) {
           setErrorMessage('Valide o código de acesso antes de revisar o documento.');
@@ -110,10 +138,14 @@ export function SignReviewPage() {
   };
 
   const requiredDocuments = documents.filter((document) => document.is_required);
+  const allRequiredDocumentsAvailable = requiredDocuments.every((document) => Boolean(documentAvailability[document.id]));
   const allRequiredAccepted = requiredDocuments.every((document) => isDocumentAccepted(document));
 
   const handleOpenPdf = async (document: PublicReviewDocument) => {
-    if (!document.signed_professional_pdf_path) return;
+    if (!document.signed_professional_pdf_path || !documentAvailability[document.id]) {
+      setErrorMessage(`Arquivo indisponível para o documento "${document.title}".`);
+      return;
+    }
     try {
       const signedUrl = await createSignedDocumentUrl(document.signed_professional_pdf_path, 1200);
       window.open(signedUrl, '_blank', 'noopener,noreferrer');
@@ -125,7 +157,10 @@ export function SignReviewPage() {
   };
 
   const handlePreviewPdf = async (document: PublicReviewDocument) => {
-    if (!document.signed_professional_pdf_path) return;
+    if (!document.signed_professional_pdf_path || !documentAvailability[document.id]) {
+      setErrorMessage(`Arquivo indisponível para o documento "${document.title}".`);
+      return;
+    }
     try {
       const signedUrl = await createSignedDocumentUrl(document.signed_professional_pdf_path, 1200);
       setPreviewDocumentId(document.id);
@@ -139,6 +174,10 @@ export function SignReviewPage() {
 
   const handleSign = async () => {
     if (!payload || documents.length === 0) return;
+    if (!allRequiredDocumentsAvailable) {
+      setErrorMessage('Existem documentos obrigatórios indisponíveis no Storage. Solicite nova assinatura profissional.');
+      return;
+    }
     if (!acceptTerms) {
       setErrorMessage('Você precisa aceitar os termos antes de assinar.');
       return;
@@ -293,13 +332,16 @@ export function SignReviewPage() {
                     {document.is_required ? <Badge>Obrigatório</Badge> : <Badge>Opcional</Badge>}
                   </div>
                   <div className="flex flex-col gap-2 sm:flex-row">
-                    <Button onClick={() => handleOpenPdf(document)} disabled={!document.signed_professional_pdf_path}>
+                    <Button
+                      onClick={() => handleOpenPdf(document)}
+                      disabled={!document.signed_professional_pdf_path || !documentAvailability[document.id]}
+                    >
                       Abrir/baixar PDF
                     </Button>
                     <Button
                       variant="secondary"
                       onClick={() => handlePreviewPdf(document)}
-                      disabled={!document.signed_professional_pdf_path}
+                      disabled={!document.signed_professional_pdf_path || !documentAvailability[document.id]}
                     >
                       Visualizar aqui (opcional)
                     </Button>
@@ -345,7 +387,7 @@ export function SignReviewPage() {
           </Card>
 
           <div className="flex justify-end">
-            <Button onClick={handleSign} disabled={submitting || !allRequiredAccepted}>
+            <Button onClick={handleSign} disabled={submitting || !allRequiredAccepted || !allRequiredDocumentsAvailable}>
               {submitting ? 'Concluindo...' : 'Assinar documento'}
             </Button>
           </div>
