@@ -146,7 +146,6 @@ export function DashboardPage() {
     try {
       setDeletingRequestId(request.id);
       await deleteProfessionalRequest(request.id);
-      setRequests((current) => current.filter((item) => item.id !== request.id));
       await loadRequests();
       setErrorMessage(null);
     } catch (error) {

@@ -114,15 +114,27 @@ export function SignReviewPage() {
 
   const handleOpenPdf = async (document: PublicReviewDocument) => {
     if (!document.signed_professional_pdf_path) return;
-    const signedUrl = await createSignedDocumentUrl(document.signed_professional_pdf_path, 1200);
-    window.open(signedUrl, '_blank', 'noopener,noreferrer');
+    try {
+      const signedUrl = await createSignedDocumentUrl(document.signed_professional_pdf_path, 1200);
+      window.open(signedUrl, '_blank', 'noopener,noreferrer');
+      setErrorMessage(null);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Não foi possível abrir o PDF.';
+      setErrorMessage(`${document.title}: ${message}`);
+    }
   };
 
   const handlePreviewPdf = async (document: PublicReviewDocument) => {
     if (!document.signed_professional_pdf_path) return;
-    const signedUrl = await createSignedDocumentUrl(document.signed_professional_pdf_path, 1200);
-    setPreviewDocumentId(document.id);
-    setPreviewDocumentUrl(signedUrl);
+    try {
+      const signedUrl = await createSignedDocumentUrl(document.signed_professional_pdf_path, 1200);
+      setPreviewDocumentId(document.id);
+      setPreviewDocumentUrl(signedUrl);
+      setErrorMessage(null);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Não foi possível visualizar o PDF.';
+      setErrorMessage(`${document.title}: ${message}`);
+    }
   };
 
   const handleSign = async () => {
@@ -164,7 +176,14 @@ export function SignReviewPage() {
           continue;
         }
 
-        const sourceBytes = await downloadDocumentBytes(document.signed_professional_pdf_path);
+        let sourceBytes: Uint8Array;
+        try {
+          sourceBytes = await downloadDocumentBytes(document.signed_professional_pdf_path);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : 'Falha ao carregar arquivo no Storage.';
+          throw new Error(`Não foi possível carregar o PDF do documento "${document.title}": ${message}`);
+        }
+
         const finalBytes = await appendSignaturePage(sourceBytes, {
           title: 'Assinatura final do paciente',
           lines: [
@@ -178,7 +197,12 @@ export function SignReviewPage() {
         });
 
         const finalPdfPath = buildRequestDocumentPath(normalizedToken, 'final', `${document.id}-final-signed.pdf`);
-        await uploadPdfBytes(finalPdfPath, finalBytes);
+        try {
+          await uploadPdfBytes(finalPdfPath, finalBytes);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : 'Falha ao salvar PDF final no Storage.';
+          throw new Error(`Não foi possível salvar o PDF final do documento "${document.title}": ${message}`);
+        }
         const finalHash = await sha256HexFromBytes(finalBytes);
         if (document.fromDatabase) {
           const attached = await attachPublicFinalDocument(normalizedToken, document.id, finalPdfPath, finalHash);

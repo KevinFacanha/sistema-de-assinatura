@@ -199,6 +199,104 @@ export type CreateRequestInput = {
   documents: CreateRequestDocumentInput[];
 };
 
+function safeDecodeURIComponent(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
+function extractStoragePathFromUrl(url: string): string | null {
+  try {
+    const parsed = new URL(url);
+    const pathname = safeDecodeURIComponent(parsed.pathname);
+    const knownPrefixes = [
+      `/storage/v1/object/sign/${DOCUMENTS_BUCKET}/`,
+      `/storage/v1/object/public/${DOCUMENTS_BUCKET}/`,
+      `/storage/v1/object/authenticated/${DOCUMENTS_BUCKET}/`,
+      `/storage/v1/object/${DOCUMENTS_BUCKET}/`,
+    ];
+
+    for (const prefix of knownPrefixes) {
+      const index = pathname.indexOf(prefix);
+      if (index >= 0) {
+        return pathname.slice(index + prefix.length);
+      }
+    }
+
+    const bucketMarker = `/${DOCUMENTS_BUCKET}/`;
+    const bucketIndex = pathname.indexOf(bucketMarker);
+    if (bucketIndex >= 0) {
+      return pathname.slice(bucketIndex + bucketMarker.length);
+    }
+
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function normalizeStoragePath(path: string): string {
+  const trimmed = path.trim();
+  if (!trimmed) {
+    return '';
+  }
+
+  const extractedFromUrl = /^https?:\/\//i.test(trimmed) ? extractStoragePathFromUrl(trimmed) : null;
+  const source = extractedFromUrl ?? trimmed;
+  const [withoutQueryOrHash] = source.split(/[?#]/, 1);
+  const decoded = safeDecodeURIComponent(withoutQueryOrHash);
+  const normalizedSlashes = decoded.replace(/\\/g, '/').replace(/^\/+/, '');
+  const withoutBucketPrefix = normalizedSlashes.startsWith(`${DOCUMENTS_BUCKET}/`)
+    ? normalizedSlashes.slice(`${DOCUMENTS_BUCKET}/`.length)
+    : normalizedSlashes;
+  return withoutBucketPrefix;
+}
+
+function normalizeNullableStoragePath(path: string | null | undefined): string | null {
+  if (!path) {
+    return null;
+  }
+
+  const normalized = normalizeStoragePath(path);
+  return normalized.length > 0 ? normalized : null;
+}
+
+function normalizeSignRequestPaths(request: SignRequest): SignRequest {
+  return {
+    ...request,
+    storage_path: normalizeNullableStoragePath(request.storage_path),
+    signed_professional_pdf_path: normalizeNullableStoragePath(request.signed_professional_pdf_path),
+    signed_final_pdf_path: normalizeNullableStoragePath(request.signed_final_pdf_path),
+  };
+}
+
+function normalizeSignRequestDocumentPaths(document: SignRequestDocument): SignRequestDocument {
+  return {
+    ...document,
+    storage_path: normalizeStoragePath(document.storage_path),
+    signed_professional_pdf_path: normalizeNullableStoragePath(document.signed_professional_pdf_path),
+    signed_final_pdf_path: normalizeNullableStoragePath(document.signed_final_pdf_path),
+  };
+}
+
+function normalizePublicReviewResultPaths(result: PublicReviewResult): PublicReviewResult {
+  return {
+    ...result,
+    signed_professional_pdf_path: normalizeNullableStoragePath(result.signed_professional_pdf_path),
+    signed_final_pdf_path: normalizeNullableStoragePath(result.signed_final_pdf_path),
+  };
+}
+
+function normalizePublicReviewDocumentPaths(document: PublicReviewDocument): PublicReviewDocument {
+  return {
+    ...document,
+    signed_professional_pdf_path: normalizeNullableStoragePath(document.signed_professional_pdf_path),
+    signed_final_pdf_path: normalizeNullableStoragePath(document.signed_final_pdf_path),
+  };
+}
+
 function sanitizeFileName(fileName: string): string {
   return fileName
     .trim()
@@ -271,9 +369,14 @@ type UploadOptions = {
 };
 
 export async function uploadPdfBytes(path: string, bytes: Uint8Array, options?: UploadOptions): Promise<void> {
+  const normalizedPath = normalizeStoragePath(path);
+  if (!normalizedPath) {
+    throw new Error('Caminho do Storage inválido para upload do PDF.');
+  }
+
   const { error } = await supabase.storage
     .from(DOCUMENTS_BUCKET)
-    .upload(path, bytes, { contentType: 'application/pdf', upsert: options?.upsert ?? true });
+    .upload(normalizedPath, bytes, { contentType: 'application/pdf', upsert: options?.upsert ?? true });
 
   if (error) {
     throw new Error(error.message);
@@ -281,9 +384,14 @@ export async function uploadPdfBytes(path: string, bytes: Uint8Array, options?: 
 }
 
 export async function uploadPdfFile(path: string, file: File, options?: UploadOptions): Promise<void> {
+  const normalizedPath = normalizeStoragePath(path);
+  if (!normalizedPath) {
+    throw new Error('Caminho do Storage inválido para upload do PDF.');
+  }
+
   const { error } = await supabase.storage
     .from(DOCUMENTS_BUCKET)
-    .upload(path, file, { contentType: file.type || 'application/pdf', upsert: options?.upsert ?? false });
+    .upload(normalizedPath, file, { contentType: file.type || 'application/pdf', upsert: options?.upsert ?? false });
 
   if (error) {
     throw new Error(error.message);
@@ -291,8 +399,16 @@ export async function uploadPdfFile(path: string, file: File, options?: UploadOp
 }
 
 export async function downloadDocumentBytes(path: string): Promise<Uint8Array> {
-  const { data, error } = await supabase.storage.from(DOCUMENTS_BUCKET).download(path);
+  const normalizedPath = normalizeStoragePath(path);
+  if (!normalizedPath) {
+    throw new Error('Caminho do Storage inválido para download do PDF.');
+  }
+
+  const { data, error } = await supabase.storage.from(DOCUMENTS_BUCKET).download(normalizedPath);
   if (error) {
+    if (/object not found/i.test(error.message)) {
+      throw new Error(`Arquivo não encontrado no Storage: ${normalizedPath}`);
+    }
     throw new Error(error.message);
   }
 
@@ -301,8 +417,16 @@ export async function downloadDocumentBytes(path: string): Promise<Uint8Array> {
 }
 
 export async function createSignedDocumentUrl(path: string, expiresInSeconds = 900): Promise<string> {
-  const { data, error } = await supabase.storage.from(DOCUMENTS_BUCKET).createSignedUrl(path, expiresInSeconds);
+  const normalizedPath = normalizeStoragePath(path);
+  if (!normalizedPath) {
+    throw new Error('Caminho do Storage inválido para gerar link temporário.');
+  }
+
+  const { data, error } = await supabase.storage.from(DOCUMENTS_BUCKET).createSignedUrl(normalizedPath, expiresInSeconds);
   if (error || !data?.signedUrl) {
+    if (error && /object not found/i.test(error.message)) {
+      throw new Error(`Arquivo não encontrado no Storage: ${normalizedPath}`);
+    }
     throw new Error(error?.message ?? 'Não foi possível gerar o link temporário do PDF.');
   }
   return data.signedUrl;
@@ -403,7 +527,7 @@ export async function listProfessionalRequests(): Promise<SignRequest[]> {
     throw new Error(error.message);
   }
 
-  return (data ?? []) as SignRequest[];
+  return ((data ?? []) as SignRequest[]).map((item) => normalizeSignRequestPaths(item));
 }
 
 export async function deleteProfessionalRequest(requestId: string): Promise<void> {
@@ -417,8 +541,9 @@ export async function deleteProfessionalRequest(requestId: string): Promise<void
   const documents = await listRequestDocuments(requestId);
   const storagePaths = new Set<string>();
   const addPath = (path: string | null) => {
-    if (path) {
-      storagePaths.add(path);
+    const normalizedPath = normalizeNullableStoragePath(path);
+    if (normalizedPath) {
+      storagePaths.add(normalizedPath);
     }
   };
 
@@ -465,7 +590,7 @@ export async function getProfessionalRequest(id: string): Promise<SignRequest | 
   if (error) {
     throw new Error(error.message);
   }
-  return (data as SignRequest | null) ?? null;
+  return data ? normalizeSignRequestPaths(data as SignRequest) : null;
 }
 
 export async function listRequestDocuments(requestId: string): Promise<SignRequestDocument[]> {
@@ -481,7 +606,7 @@ export async function listRequestDocuments(requestId: string): Promise<SignReque
     throw new Error(error.message);
   }
 
-  return (data ?? []) as SignRequestDocument[];
+  return ((data ?? []) as SignRequestDocument[]).map((item) => normalizeSignRequestDocumentPaths(item));
 }
 
 export async function listRequestEvents(requestId: string): Promise<RequestEvent[]> {
@@ -814,7 +939,7 @@ export async function getPublicReviewRequest(token: string): Promise<PublicRevie
   }
 
   const row = data[0] as PublicReviewRpcRow;
-  return {
+  const payload = {
     id: row.id,
     patient_name: row.patient_name,
     document_title: row.document_title,
@@ -830,6 +955,7 @@ export async function getPublicReviewRequest(token: string): Promise<PublicRevie
     file_name: row.file_name,
     mime_type: row.mime_type,
   };
+  return normalizePublicReviewResultPaths(payload);
 }
 
 export async function listPublicReviewDocuments(token: string): Promise<PublicReviewDocument[]> {
@@ -841,7 +967,7 @@ export async function listPublicReviewDocuments(token: string): Promise<PublicRe
     throw new Error(error.message);
   }
 
-  return ((data ?? []) as PublicReviewDocumentRpcRow[]).map((row) => ({
+  const documents = ((data ?? []) as PublicReviewDocumentRpcRow[]).map((row) => ({
     id: row.id,
     request_id: row.request_id,
     document_type: row.document_type,
@@ -854,6 +980,7 @@ export async function listPublicReviewDocuments(token: string): Promise<PublicRe
     document_hash: row.document_hash,
     consent_accepted_at: row.consent_accepted_at,
   }));
+  return documents.map((document) => normalizePublicReviewDocumentPaths(document));
 }
 
 export async function acceptPublicConsent(token: string): Promise<boolean> {
