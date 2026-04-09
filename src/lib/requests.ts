@@ -432,6 +432,27 @@ export async function createSignedDocumentUrl(path: string, expiresInSeconds = 9
   return data.signedUrl;
 }
 
+async function assertStorageObjectAvailable(path: string, context: string): Promise<void> {
+  const retries = 3;
+  let lastError: unknown = null;
+
+  for (let attempt = 1; attempt <= retries; attempt += 1) {
+    try {
+      await createSignedDocumentUrl(path, 60);
+      return;
+    } catch (error) {
+      lastError = error;
+      if (attempt < retries) {
+        await new Promise((resolve) => setTimeout(resolve, attempt * 250));
+      }
+    }
+  }
+
+  const message =
+    lastError instanceof Error ? lastError.message : 'Falha ao validar existência do arquivo no Storage.';
+  throw new Error(`${context}: ${message}`);
+}
+
 export async function signInProfessional(email: string, password: string): Promise<void> {
   try {
     const { error } = await supabase.auth.signInWithPassword({ email, password });
@@ -680,7 +701,12 @@ export async function createProfessionalRequest(input: CreateRequestInput): Prom
   for (const document of preparedDocuments) {
     const documentId = crypto.randomUUID();
     const safeFileName = sanitizeFileName(document.pdfFile.name || `${requestId}-${document.sortOrder}.pdf`);
-    const originalPath = buildRequestDocumentPath(token, 'original', `${requestId}-${documentId}-${safeFileName}`);
+    const originalPath = normalizeStoragePath(
+      buildRequestDocumentPath(token, 'original', `${requestId}-${documentId}-${safeFileName}`),
+    );
+    if (!originalPath) {
+      throw new Error(`Não foi possível determinar o caminho de armazenamento do documento ${document.sortOrder}.`);
+    }
     const originalBytes = new Uint8Array(await document.pdfFile.arrayBuffer());
     const originalPdfHash = await sha256HexFromBytes(originalBytes);
 
@@ -708,6 +734,19 @@ export async function createProfessionalRequest(input: CreateRequestInput): Prom
 
   const firstDocument = uploadedDocuments[0];
   const requestDocumentTitle = input.documentTitle?.trim() || firstDocument.title;
+  const cleanupUploadedOriginals = async () => {
+    const { error: storageCleanupError } = await supabase
+      .storage
+      .from(DOCUMENTS_BUCKET)
+      .remove(uploadedDocuments.map((document) => document.storage_path));
+    if (storageCleanupError) {
+      console.warn('Falha ao reverter arquivos originais após erro na criação da solicitação.', storageCleanupError);
+    }
+  };
+  const cleanupRequestRow = async () => {
+    const { error: rollbackRequestError } = await supabase.from('sign_requests').delete().eq('id', requestId);
+    return rollbackRequestError;
+  };
 
   const { data, error } = await supabase
     .from('sign_requests')
@@ -733,18 +772,46 @@ export async function createProfessionalRequest(input: CreateRequestInput): Prom
     .single();
 
   if (error) {
-    await supabase.storage.from(DOCUMENTS_BUCKET).remove(uploadedDocuments.map((document) => document.storage_path));
+    await cleanupUploadedOriginals();
     throw new Error(`Falha ao criar a solicitação no banco de dados: ${error.message}`);
   }
 
-  const { error: documentsError } = await supabase.from('sign_request_documents').insert(uploadedDocuments);
-  if (documentsError) {
-    await supabase.storage.from(DOCUMENTS_BUCKET).remove(uploadedDocuments.map((document) => document.storage_path));
-    await supabase.from('sign_requests').delete().eq('id', requestId);
-    throw new Error(`Falha ao salvar os documentos da solicitação: ${documentsError.message}`);
+  const created = normalizeSignRequestPaths(data as SignRequest);
+  if (created.id !== requestId || created.sign_token !== token) {
+    await cleanupUploadedOriginals();
+    const rollbackRequestError = await cleanupRequestRow();
+    const rollbackMessage = rollbackRequestError
+      ? ` Também não foi possível reverter a solicitação criada (${rollbackRequestError.message}).`
+      : '';
+    throw new Error(
+      `A solicitação foi criada com dados inconsistentes (id/token diferente do esperado).${rollbackMessage}`,
+    );
   }
 
-  const created = data as SignRequest;
+  const { data: insertedDocuments, error: documentsError } = await supabase
+    .from('sign_request_documents')
+    .insert(uploadedDocuments)
+    .select('id');
+  if (documentsError) {
+    await cleanupUploadedOriginals();
+    const rollbackRequestError = await cleanupRequestRow();
+    const rollbackMessage = rollbackRequestError
+      ? ` Também não foi possível reverter a solicitação criada (${rollbackRequestError.message}).`
+      : '';
+    throw new Error(`Falha ao salvar os documentos da solicitação: ${documentsError.message}.${rollbackMessage}`);
+  }
+
+  if ((insertedDocuments ?? []).length !== uploadedDocuments.length) {
+    await cleanupUploadedOriginals();
+    const rollbackRequestError = await cleanupRequestRow();
+    const rollbackMessage = rollbackRequestError
+      ? ` Também não foi possível reverter a solicitação criada (${rollbackRequestError.message}).`
+      : '';
+    throw new Error(
+      `Persistência incompleta dos documentos da solicitação (esperado: ${uploadedDocuments.length}, salvo: ${(insertedDocuments ?? []).length}).${rollbackMessage}`,
+    );
+  }
+
   try {
     await insertProfessionalEvent(created.id, 'request_created', '/requests/new');
   } catch (error) {
@@ -769,10 +836,25 @@ export async function signRequestAsProfessional(requestId: string, signature: st
     }
 
     if (existing.professional_signed_at && existing.signed_professional_pdf_path) {
-      return existing;
+      try {
+        await assertStorageObjectAvailable(
+          existing.signed_professional_pdf_path,
+          'Arquivo já assinado pelo profissional está indisponível no Storage',
+        );
+        return existing;
+      } catch {
+        // Se o arquivo assinado anterior não existir mais, o fluxo regenera o PDF profissional.
+      }
     }
 
-    const sourceBytes = await downloadDocumentBytes(existing.storage_path);
+    let sourceBytes: Uint8Array;
+    try {
+      sourceBytes = await downloadDocumentBytes(existing.storage_path);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Falha ao baixar PDF original.';
+      throw new Error(`Não foi possível carregar o PDF original para assinatura profissional: ${message}`);
+    }
+
     const signedBytes = await appendSignaturePage(sourceBytes, {
       title: 'Assinatura profissional',
       lines: [
@@ -784,13 +866,30 @@ export async function signRequestAsProfessional(requestId: string, signature: st
       ],
     });
 
-    const professionalPath = buildRequestDocumentPath(
+    const professionalPath = normalizeStoragePath(
+      buildRequestDocumentPath(
       existing.sign_token,
       'professional',
       `${existing.id}-professional-signed.pdf`,
+      ),
     );
 
-    await uploadPdfBytes(professionalPath, signedBytes);
+    if (!professionalPath) {
+      throw new Error('Não foi possível determinar o caminho do PDF assinado pelo profissional.');
+    }
+
+    try {
+      await uploadPdfBytes(professionalPath, signedBytes);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Falha no upload do PDF assinado.';
+      throw new Error(`Não foi possível salvar o PDF assinado do profissional no Storage: ${message}`);
+    }
+
+    await assertStorageObjectAvailable(
+      professionalPath,
+      'PDF assinado pelo profissional não foi encontrado no Storage após o upload',
+    );
+
     const signedHash = await sha256HexFromBytes(signedBytes);
 
     const { data, error } = await supabase
@@ -816,13 +915,36 @@ export async function signRequestAsProfessional(requestId: string, signature: st
   }
 
   if (existing.professional_signed_at && documentsToSign.every((document) => Boolean(document.signed_professional_pdf_path))) {
-    return existing;
+    const availabilityChecks = await Promise.all(
+      documentsToSign.map(async (document) => {
+        try {
+          await assertStorageObjectAvailable(
+            document.signed_professional_pdf_path as string,
+            `Arquivo assinado do documento "${document.title}" está indisponível`,
+          );
+          return true;
+        } catch {
+          return false;
+        }
+      }),
+    );
+
+    if (availabilityChecks.every(Boolean)) {
+      return existing;
+    }
   }
 
   const signedDocumentMeta: Array<{ id: string; path: string; hash: string }> = [];
 
   for (const document of documentsToSign) {
-    const sourceBytes = await downloadDocumentBytes(document.storage_path);
+    let sourceBytes: Uint8Array;
+    try {
+      sourceBytes = await downloadDocumentBytes(document.storage_path);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Falha ao baixar PDF original.';
+      throw new Error(`Não foi possível carregar o PDF original do documento "${document.title}": ${message}`);
+    }
+
     const signedBytes = await appendSignaturePage(sourceBytes, {
       title: 'Assinatura profissional',
       lines: [
@@ -834,8 +956,25 @@ export async function signRequestAsProfessional(requestId: string, signature: st
       ],
     });
 
-    const professionalPath = buildRequestDocumentPath(existing.sign_token, 'professional', `${document.id}-professional-signed.pdf`);
-    await uploadPdfBytes(professionalPath, signedBytes);
+    const professionalPath = normalizeStoragePath(
+      buildRequestDocumentPath(existing.sign_token, 'professional', `${document.id}-professional-signed.pdf`),
+    );
+    if (!professionalPath) {
+      throw new Error(`Não foi possível determinar o caminho do PDF assinado para o documento "${document.title}".`);
+    }
+
+    try {
+      await uploadPdfBytes(professionalPath, signedBytes);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Falha no upload do PDF assinado.';
+      throw new Error(`Não foi possível salvar o PDF assinado do documento "${document.title}" no Storage: ${message}`);
+    }
+
+    await assertStorageObjectAvailable(
+      professionalPath,
+      `PDF assinado do documento "${document.title}" não foi encontrado no Storage após o upload`,
+    );
+
     const signedHash = await sha256HexFromBytes(signedBytes);
 
     const { error: documentUpdateError } = await supabase
@@ -850,7 +989,9 @@ export async function signRequestAsProfessional(requestId: string, signature: st
       .eq('request_id', requestId);
 
     if (documentUpdateError) {
-      throw new Error(documentUpdateError.message);
+      throw new Error(
+        `Não foi possível registrar no banco o PDF assinado do documento "${document.title}": ${documentUpdateError.message}`,
+      );
     }
 
     signedDocumentMeta.push({
@@ -858,6 +999,13 @@ export async function signRequestAsProfessional(requestId: string, signature: st
       path: professionalPath,
       hash: signedHash,
     });
+  }
+
+  for (const document of signedDocumentMeta) {
+    await assertStorageObjectAvailable(
+      document.path,
+      `Validação final falhou para o PDF assinado do documento ${document.id}`,
+    );
   }
 
   const aggregateHash = await sha256Hex(signedDocumentMeta.map((document) => `${document.id}:${document.hash}`).join('|'));
