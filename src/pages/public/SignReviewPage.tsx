@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 
 import { PdfViewer } from '../../components/pdf/PdfViewer';
@@ -45,8 +45,27 @@ export function SignReviewPage() {
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const previewUsesBlobRef = useRef(false);
 
   const normalizedToken = token ?? '';
+
+  const setPreviewUrl = (url: string | null, usesBlob: boolean) => {
+    setPreviewDocumentUrl((current) => {
+      if (previewUsesBlobRef.current && current) {
+        URL.revokeObjectURL(current);
+      }
+      return url;
+    });
+    previewUsesBlobRef.current = usesBlob;
+  };
+
+  useEffect(() => {
+    return () => {
+      if (previewUsesBlobRef.current && previewDocumentUrl) {
+        URL.revokeObjectURL(previewDocumentUrl);
+      }
+    };
+  }, [previewDocumentUrl]);
 
   useEffect(() => {
     if (!normalizedToken) return;
@@ -93,7 +112,12 @@ export function SignReviewPage() {
               await createSignedDocumentUrl(document.signed_professional_pdf_path, 60);
               return [document.id, true] as const;
             } catch {
-              return [document.id, false] as const;
+              try {
+                await downloadDocumentBytes(document.signed_professional_pdf_path);
+                return [document.id, true] as const;
+              } catch {
+                return [document.id, false] as const;
+              }
             }
           }),
         );
@@ -151,8 +175,17 @@ export function SignReviewPage() {
       window.open(signedUrl, '_blank', 'noopener,noreferrer');
       setErrorMessage(null);
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Não foi possível abrir o PDF.';
-      setErrorMessage(`${document.title}: ${message}`);
+      const primaryMessage = error instanceof Error ? error.message : 'Não foi possível abrir o PDF.';
+      try {
+        const bytes = await downloadDocumentBytes(document.signed_professional_pdf_path);
+        const blobUrl = URL.createObjectURL(new Blob([bytes], { type: 'application/pdf' }));
+        window.open(blobUrl, '_blank', 'noopener,noreferrer');
+        window.setTimeout(() => URL.revokeObjectURL(blobUrl), 60_000);
+        setErrorMessage(null);
+      } catch (fallbackError) {
+        const fallbackMessage = fallbackError instanceof Error ? fallbackError.message : 'Falha no fallback do PDF.';
+        setErrorMessage(`${document.title}: ${primaryMessage}. Fallback: ${fallbackMessage}`);
+      }
     }
   };
 
@@ -164,11 +197,20 @@ export function SignReviewPage() {
     try {
       const signedUrl = await createSignedDocumentUrl(document.signed_professional_pdf_path, 1200);
       setPreviewDocumentId(document.id);
-      setPreviewDocumentUrl(signedUrl);
+      setPreviewUrl(signedUrl, false);
       setErrorMessage(null);
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Não foi possível visualizar o PDF.';
-      setErrorMessage(`${document.title}: ${message}`);
+      const primaryMessage = error instanceof Error ? error.message : 'Não foi possível visualizar o PDF.';
+      try {
+        const bytes = await downloadDocumentBytes(document.signed_professional_pdf_path);
+        const blobUrl = URL.createObjectURL(new Blob([bytes], { type: 'application/pdf' }));
+        setPreviewDocumentId(document.id);
+        setPreviewUrl(blobUrl, true);
+        setErrorMessage(null);
+      } catch (fallbackError) {
+        const fallbackMessage = fallbackError instanceof Error ? fallbackError.message : 'Falha no fallback do PDF.';
+        setErrorMessage(`${document.title}: ${primaryMessage}. Fallback: ${fallbackMessage}`);
+      }
     }
   };
 

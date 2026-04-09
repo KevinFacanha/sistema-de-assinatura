@@ -368,6 +368,38 @@ type UploadOptions = {
   upsert?: boolean;
 };
 
+function formatStorageErrorDetails(error: unknown): string {
+  if (!error || typeof error !== 'object') {
+    return String(error ?? 'Erro desconhecido');
+  }
+
+  const message =
+    (typeof (error as { message?: unknown }).message === 'string' && (error as { message?: string }).message) ||
+    'Erro sem mensagem';
+  const statusCode =
+    (typeof (error as { statusCode?: unknown }).statusCode === 'string' ||
+      typeof (error as { statusCode?: unknown }).statusCode === 'number') &&
+    (error as { statusCode?: string | number }).statusCode;
+  const errorCode =
+    typeof (error as { error?: unknown }).error === 'string' && (error as { error?: string }).error;
+
+  const details = [`message=${message}`];
+  if (statusCode) details.push(`statusCode=${statusCode}`);
+  if (errorCode) details.push(`error=${errorCode}`);
+
+  return details.join(', ');
+}
+
+async function downloadDocumentBytesFromSignedUrl(path: string): Promise<Uint8Array> {
+  const signedUrl = await createSignedDocumentUrl(path, 120);
+  const response = await fetch(signedUrl);
+  if (!response.ok) {
+    throw new Error(`Falha ao baixar PDF via signed URL (status ${response.status}).`);
+  }
+  const bytes = await response.arrayBuffer();
+  return new Uint8Array(bytes);
+}
+
 export async function uploadPdfBytes(path: string, bytes: Uint8Array, options?: UploadOptions): Promise<void> {
   const normalizedPath = normalizeStoragePath(path);
   if (!normalizedPath) {
@@ -405,15 +437,31 @@ export async function downloadDocumentBytes(path: string): Promise<Uint8Array> {
   }
 
   const { data, error } = await supabase.storage.from(DOCUMENTS_BUCKET).download(normalizedPath);
-  if (error) {
-    if (/object not found/i.test(error.message)) {
-      throw new Error(`Arquivo não encontrado no Storage: ${normalizedPath}`);
-    }
-    throw new Error(error.message);
+  if (!error && data) {
+    const bytes = await data.arrayBuffer();
+    return new Uint8Array(bytes);
   }
 
-  const bytes = await data.arrayBuffer();
-  return new Uint8Array(bytes);
+  const storageErrorDetails = formatStorageErrorDetails(error);
+  console.error('Storage download falhou', {
+    rawPath: path,
+    normalizedPath,
+    storageError: error,
+  });
+
+  try {
+    return await downloadDocumentBytesFromSignedUrl(normalizedPath);
+  } catch (fallbackError) {
+    const fallbackErrorDetails = formatStorageErrorDetails(fallbackError);
+    if (storageErrorDetails.toLowerCase().includes('object not found')) {
+      throw new Error(
+        `Arquivo não encontrado no Storage: ${normalizedPath}. Detalhes Supabase: ${storageErrorDetails}. Fallback: ${fallbackErrorDetails}`,
+      );
+    }
+    throw new Error(
+      `Falha ao baixar PDF do Storage (${normalizedPath}). Detalhes Supabase: ${storageErrorDetails}. Fallback: ${fallbackErrorDetails}`,
+    );
+  }
 }
 
 export async function createSignedDocumentUrl(path: string, expiresInSeconds = 900): Promise<string> {
@@ -424,10 +472,17 @@ export async function createSignedDocumentUrl(path: string, expiresInSeconds = 9
 
   const { data, error } = await supabase.storage.from(DOCUMENTS_BUCKET).createSignedUrl(normalizedPath, expiresInSeconds);
   if (error || !data?.signedUrl) {
-    if (error && /object not found/i.test(error.message)) {
-      throw new Error(`Arquivo não encontrado no Storage: ${normalizedPath}`);
+    const storageErrorDetails = formatStorageErrorDetails(error ?? 'signedUrl ausente');
+    console.error('Storage createSignedUrl falhou', {
+      rawPath: path,
+      normalizedPath,
+      storageError: error,
+    });
+
+    if (storageErrorDetails.toLowerCase().includes('object not found')) {
+      throw new Error(`Arquivo não encontrado no Storage: ${normalizedPath}. Detalhes Supabase: ${storageErrorDetails}`);
     }
-    throw new Error(error?.message ?? 'Não foi possível gerar o link temporário do PDF.');
+    throw new Error(`Falha ao gerar link temporário do PDF (${normalizedPath}). Detalhes Supabase: ${storageErrorDetails}`);
   }
   return data.signedUrl;
 }
