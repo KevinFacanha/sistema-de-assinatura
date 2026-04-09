@@ -432,6 +432,22 @@ export async function deleteProfessionalRequest(requestId: string): Promise<void
     addPath(document.signed_final_pdf_path);
   }
 
+  const { data: deletedRequest, error } = await supabase
+    .from('sign_requests')
+    .delete()
+    .eq('id', requestId)
+    .select('id')
+    .maybeSingle();
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  if (!deletedRequest) {
+    throw new Error(
+      'Não foi possível excluir a solicitação no banco de dados. Verifique se a policy de DELETE em sign_requests está aplicada.',
+    );
+  }
+
   if (storagePaths.size > 0) {
     const { error: storageError } = await supabase.storage
       .from(DOCUMENTS_BUCKET)
@@ -439,11 +455,6 @@ export async function deleteProfessionalRequest(requestId: string): Promise<void
     if (storageError) {
       console.warn('Falha ao remover todos os arquivos da solicitação no Storage.', storageError);
     }
-  }
-
-  const { error } = await supabase.from('sign_requests').delete().eq('id', requestId);
-  if (error) {
-    throw new Error(error.message);
   }
 }
 

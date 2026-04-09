@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 
 import { Alert, Button, Card, Input, PageHeader, SectionHeader, Select, StatusPill } from '../../components/ui';
@@ -43,17 +43,28 @@ export function DashboardPage() {
   const [selectedMonth, setSelectedMonth] = useState(ALL_MONTHS);
   const [showAllRequests, setShowAllRequests] = useState(false);
   const [deletingRequestId, setDeletingRequestId] = useState<string | null>(null);
+  const latestLoadRequestRef = useRef(0);
 
   const loadRequests = useCallback(async () => {
+    const requestSequence = ++latestLoadRequestRef.current;
+
     try {
       const data = await listProfessionalRequests();
+      if (requestSequence !== latestLoadRequestRef.current) {
+        return;
+      }
       setRequests(data);
       setErrorMessage(null);
     } catch (error) {
+      if (requestSequence !== latestLoadRequestRef.current) {
+        return;
+      }
       const message = error instanceof Error ? error.message : 'Falha ao carregar solicitações.';
       setErrorMessage(message);
     } finally {
-      setLoading(false);
+      if (requestSequence === latestLoadRequestRef.current) {
+        setLoading(false);
+      }
     }
   }, []);
 
@@ -136,6 +147,7 @@ export function DashboardPage() {
       setDeletingRequestId(request.id);
       await deleteProfessionalRequest(request.id);
       setRequests((current) => current.filter((item) => item.id !== request.id));
+      await loadRequests();
       setErrorMessage(null);
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Não foi possível excluir a solicitação.';
@@ -143,7 +155,7 @@ export function DashboardPage() {
     } finally {
       setDeletingRequestId(null);
     }
-  }, []);
+  }, [loadRequests]);
 
   return (
     <div className="space-y-6">

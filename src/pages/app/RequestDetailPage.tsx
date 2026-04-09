@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 
 import { Alert, Badge, Button, Card, PageHeader, SectionHeader, StatusPill, SummaryCard } from '../../components/ui';
+import { buildPatientSignUrl } from '../../lib/appBaseUrl';
 import type { RequestEvent, SignRequest, SignRequestDocument } from '../../lib/requests';
 import { createSignedDocumentUrl, getProfessionalRequest, listRequestDocuments, listRequestEvents } from '../../lib/requests';
 
@@ -78,7 +79,7 @@ export function RequestDetailPage() {
 
   const publicLink = useMemo(() => {
     if (!request?.sign_token) return null;
-    return `${window.location.origin}/sign/${request.sign_token}`;
+    return buildPatientSignUrl(request.sign_token);
   }, [request?.sign_token]);
 
   const handleCopy = async (value: string, successMessage: string) => {
