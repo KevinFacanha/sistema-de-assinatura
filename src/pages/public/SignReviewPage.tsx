@@ -178,7 +178,9 @@ export function SignReviewPage() {
       const primaryMessage = error instanceof Error ? error.message : 'Não foi possível abrir o PDF.';
       try {
         const bytes = await downloadDocumentBytes(document.signed_professional_pdf_path);
-        const blobUrl = URL.createObjectURL(new Blob([bytes], { type: 'application/pdf' }));
+        const safeBytes = new Uint8Array(bytes.byteLength);
+        safeBytes.set(bytes);
+        const blobUrl = URL.createObjectURL(new Blob([safeBytes.buffer], { type: 'application/pdf' }));
         window.open(blobUrl, '_blank', 'noopener,noreferrer');
         window.setTimeout(() => URL.revokeObjectURL(blobUrl), 60_000);
         setErrorMessage(null);
@@ -203,7 +205,9 @@ export function SignReviewPage() {
       const primaryMessage = error instanceof Error ? error.message : 'Não foi possível visualizar o PDF.';
       try {
         const bytes = await downloadDocumentBytes(document.signed_professional_pdf_path);
-        const blobUrl = URL.createObjectURL(new Blob([bytes], { type: 'application/pdf' }));
+        const safeBytes = new Uint8Array(bytes.byteLength);
+        safeBytes.set(bytes);
+        const blobUrl = URL.createObjectURL(new Blob([safeBytes.buffer], { type: 'application/pdf' }));
         setPreviewDocumentId(document.id);
         setPreviewUrl(blobUrl, true);
         setErrorMessage(null);
