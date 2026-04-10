@@ -30,6 +30,40 @@ export function SignCompletedPage() {
   const [documents, setDocuments] = useState<PublicReviewDocument[]>([]);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
+  const openPdf = async (path: string, source: string) => {
+    const previewPath = path.length > 120 ? `${path.slice(0, 120)}...` : path;
+    console.info('[PublicCompleted] clique em abrir PDF', { source, path: previewPath });
+
+    // Mobile browsers bloqueiam popup quando window.open ocorre após await.
+    const popup = window.open('', '_blank');
+    if (!popup) {
+      console.warn('[PublicCompleted] popup bloqueado, fallback para mesma aba', { source });
+    }
+
+    try {
+      console.info('[PublicCompleted] helper createSignedDocumentUrl chamado', { source, path: previewPath });
+      const url = await createSignedDocumentUrl(path, 1200, {
+        forceAnon: true,
+        context: `public-completed:${source}`,
+      });
+      console.info('[PublicCompleted] signed URL gerada', { source, urlPreview: url.slice(0, 160) });
+
+      if (popup) {
+        popup.location.href = url;
+      } else {
+        window.location.assign(url);
+      }
+      setErrorMessage(null);
+    } catch (error: unknown) {
+      if (popup) {
+        popup.close();
+      }
+      console.error('[PublicCompleted] erro ao abrir PDF', { source, path: previewPath, error });
+      const message = error instanceof Error ? error.message : 'Não foi possível abrir o PDF.';
+      setErrorMessage(message);
+    }
+  };
+
   useEffect(() => {
     if (!token) return;
     Promise.all([getPublicReviewRequest(token), listPublicReviewDocuments(token)])
@@ -85,14 +119,7 @@ export function SignCompletedPage() {
                   onClick={async () => {
                     const path = document.signed_final_pdf_path ?? document.signed_professional_pdf_path;
                     if (!path) return;
-                    try {
-                      const url = await createSignedDocumentUrl(path, 1200);
-                      window.open(url, '_blank', 'noopener,noreferrer');
-                    } catch (error: unknown) {
-                      const message =
-                        error instanceof Error ? error.message : 'Não foi possível abrir o PDF da solicitação.';
-                      setErrorMessage(message);
-                    }
+                    await openPdf(path, `document:${document.id}`);
                   }}
                   disabled={!document.signed_final_pdf_path && !document.signed_professional_pdf_path}
                 >
@@ -109,13 +136,7 @@ export function SignCompletedPage() {
           variant="secondary"
           onClick={async () => {
             if (!payload?.signed_final_pdf_path) return;
-            try {
-              const url = await createSignedDocumentUrl(payload.signed_final_pdf_path, 1200);
-              window.open(url, '_blank', 'noopener,noreferrer');
-            } catch (error: unknown) {
-              const message = error instanceof Error ? error.message : 'Não foi possível abrir o PDF final.';
-              setErrorMessage(message);
-            }
+            await openPdf(payload.signed_final_pdf_path, 'final-button');
           }}
           disabled={!payload?.signed_final_pdf_path}
         >
