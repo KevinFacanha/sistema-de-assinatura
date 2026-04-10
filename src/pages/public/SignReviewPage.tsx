@@ -33,6 +33,10 @@ function formatDateTimeWithSeconds(date = new Date()): string {
   }).format(date);
 }
 
+function isRequestCompleted(request: PublicReviewResult | null): boolean {
+  return Boolean(request && (request.status === 'completed' || request.patient_signed_at));
+}
+
 export function SignReviewPage() {
   const { token } = useParams();
   const navigate = useNavigate();
@@ -49,7 +53,6 @@ export function SignReviewPage() {
   const previewUsesBlobRef = useRef(false);
 
   const normalizedToken = token ?? '';
-
   const setPreviewUrl = (url: string | null, usesBlob: boolean) => {
     setPreviewDocumentUrl((current) => {
       if (previewUsesBlobRef.current && current) {
@@ -88,6 +91,14 @@ export function SignReviewPage() {
           getPublicReviewRequest(normalizedToken),
           listPublicReviewDocuments(normalizedToken),
         ]);
+
+        if (isRequestCompleted(requestData)) {
+          setPayload(requestData);
+          setDocuments([]);
+          setErrorMessage('Esta solicitação já foi concluída. Redirecionando para a confirmação final.');
+          navigate(`/sign/${normalizedToken}/completed`, { replace: true });
+          return;
+        }
 
         setPayload(requestData);
         const mergedDocuments: Array<PublicReviewDocument & { fromDatabase: boolean }> =
@@ -173,7 +184,7 @@ export function SignReviewPage() {
     };
 
     load();
-  }, [normalizedToken]);
+  }, [navigate, normalizedToken]);
 
   const isDocumentAccepted = (document: PublicReviewDocument) => {
     return Boolean(document.consent_accepted_at || acceptedDocuments[document.id]);
@@ -267,6 +278,17 @@ export function SignReviewPage() {
     setErrorMessage(null);
 
     try {
+      const latestBeforeProcessing = await getPublicReviewRequest(normalizedToken);
+      if (!latestBeforeProcessing) {
+        setErrorMessage('A solicitação não está mais disponível para assinatura.');
+        return;
+      }
+      if (isRequestCompleted(latestBeforeProcessing)) {
+        setErrorMessage('Esta solicitação já foi assinada e concluída.');
+        navigate(`/sign/${normalizedToken}/completed`, { replace: true });
+        return;
+      }
+
       for (const document of documents) {
         if (document.fromDatabase && isDocumentAccepted(document) && !document.consent_accepted_at) {
           const accepted = await acceptPublicDocumentConsent(normalizedToken, document.id);
@@ -344,6 +366,17 @@ export function SignReviewPage() {
       }
 
       const aggregateHash = await sha256Hex(finalDocumentsMeta.map((document) => `${document.id}:${document.hash}`).join('|'));
+      const latestBeforeFinalize = await getPublicReviewRequest(normalizedToken);
+      if (!latestBeforeFinalize) {
+        setErrorMessage('A solicitação não está mais disponível para conclusão.');
+        return;
+      }
+      if (isRequestCompleted(latestBeforeFinalize)) {
+        setErrorMessage('Esta solicitação já foi assinada e concluída.');
+        navigate(`/sign/${normalizedToken}/completed`, { replace: true });
+        return;
+      }
+
       const signed = await signPublicRequest(
         normalizedToken,
         patientSignature,
@@ -351,7 +384,8 @@ export function SignReviewPage() {
         aggregateHash,
       );
       if (!signed) {
-        setErrorMessage('Não foi possível concluir a assinatura.');
+        setErrorMessage('Esta solicitação já foi concluída ou não está mais disponível para nova assinatura.');
+        navigate(`/sign/${normalizedToken}/completed`, { replace: true });
         return;
       }
 
@@ -382,6 +416,15 @@ export function SignReviewPage() {
           <Button variant="secondary" onClick={() => navigate(`/sign/${normalizedToken}/otp`)}>
             Ir para código de acesso
           </Button>
+        </Card>
+      ) : isRequestCompleted(payload) ? (
+        <Card className="space-y-3 p-4">
+          <p className="text-sm text-text-muted">Esta solicitação já foi concluída. A assinatura não pode ser refeita.</p>
+          <div className="flex justify-end">
+            <Button variant="secondary" onClick={() => navigate(`/sign/${normalizedToken}/completed`, { replace: true })}>
+              Ver conclusão
+            </Button>
+          </div>
         </Card>
       ) : (
         <>

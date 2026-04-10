@@ -80,7 +80,12 @@ export function SignEntryPage() {
       ) : null}
 
       <div className="flex justify-end">
-        <Button onClick={() => navigate(`/sign/${normalizedToken}/otp`)} disabled={!payload}>
+        <Button
+          onClick={() =>
+            navigate(payload?.status === 'completed' ? `/sign/${normalizedToken}/completed` : `/sign/${normalizedToken}/otp`)
+          }
+          disabled={!payload}
+        >
           Continuar
         </Button>
       </div>

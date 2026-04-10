@@ -3,7 +3,7 @@ import { useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 
 import { Alert, Button, Card, Input } from '../../components/ui';
-import { validatePublicAccessCode } from '../../lib/requests';
+import { getPublicReviewRequest, validatePublicAccessCode } from '../../lib/requests';
 import { PublicFlowHeader } from './PublicFlowHeader';
 
 export function SignOtpPage() {
@@ -25,9 +25,15 @@ export function SignOtpPage() {
     setSuccessMessage(null);
 
     validatePublicAccessCode(normalizedToken, accessCode)
-      .then((ok) => {
+      .then(async (ok) => {
         if (!ok) {
           setErrorMessage('Código inválido. Confira o código enviado pelo nutricionista.');
+          return;
+        }
+        const latestRequest = await getPublicReviewRequest(normalizedToken);
+        if (latestRequest && (latestRequest.status === 'completed' || latestRequest.patient_signed_at)) {
+          setSuccessMessage('Solicitação já concluída. Redirecionando para a confirmação final.');
+          navigate(`/sign/${normalizedToken}/completed`, { replace: true });
           return;
         }
         setSuccessMessage('Código validado com sucesso.');
