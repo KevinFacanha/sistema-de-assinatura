@@ -1,4 +1,4 @@
-import type { Session, User } from '@supabase/supabase-js';
+import { createClient, type Session, type SupabaseClient, type User } from '@supabase/supabase-js';
 
 import { getClientMeta } from './clientMeta';
 import { appendSignaturePage } from './pdfSigning';
@@ -368,6 +368,41 @@ type UploadOptions = {
   upsert?: boolean;
 };
 
+type StorageReadOptions = {
+  forceAnon?: boolean;
+  context?: string;
+};
+
+let publicAnonStorageClient: SupabaseClient | null = null;
+
+function getPublicAnonStorageClient(): SupabaseClient {
+  if (publicAnonStorageClient) {
+    return publicAnonStorageClient;
+  }
+
+  const supabaseUrl = (import.meta.env.VITE_SUPABASE_URL ?? '').trim();
+  const supabaseAnonKey = (import.meta.env.VITE_SUPABASE_ANON_KEY ?? '').trim();
+  if (!supabaseUrl || !supabaseAnonKey) {
+    throw new Error('Supabase não configurado para leitura pública do Storage.');
+  }
+
+  publicAnonStorageClient = createClient(supabaseUrl, supabaseAnonKey, {
+    auth: {
+      persistSession: false,
+      autoRefreshToken: false,
+      detectSessionInUrl: false,
+    },
+  });
+  return publicAnonStorageClient;
+}
+
+function getStorageReadClient(options?: StorageReadOptions): SupabaseClient {
+  if (options?.forceAnon) {
+    return getPublicAnonStorageClient();
+  }
+  return supabase;
+}
+
 function formatStorageErrorDetails(error: unknown): string {
   if (!error || typeof error !== 'object') {
     return String(error ?? 'Erro desconhecido');
@@ -390,8 +425,8 @@ function formatStorageErrorDetails(error: unknown): string {
   return details.join(', ');
 }
 
-async function downloadDocumentBytesFromSignedUrl(path: string): Promise<Uint8Array> {
-  const signedUrl = await createSignedDocumentUrl(path, 120);
+async function downloadDocumentBytesFromSignedUrl(path: string, options?: StorageReadOptions): Promise<Uint8Array> {
+  const signedUrl = await createSignedDocumentUrl(path, 120, options);
   const response = await fetch(signedUrl);
   if (!response.ok) {
     throw new Error(`Falha ao baixar PDF via signed URL (status ${response.status}).`);
@@ -430,13 +465,14 @@ export async function uploadPdfFile(path: string, file: File, options?: UploadOp
   }
 }
 
-export async function downloadDocumentBytes(path: string): Promise<Uint8Array> {
+export async function downloadDocumentBytes(path: string, options?: StorageReadOptions): Promise<Uint8Array> {
   const normalizedPath = normalizeStoragePath(path);
   if (!normalizedPath) {
     throw new Error('Caminho do Storage inválido para download do PDF.');
   }
 
-  const { data, error } = await supabase.storage.from(DOCUMENTS_BUCKET).download(normalizedPath);
+  const storageClient = getStorageReadClient(options);
+  const { data, error } = await storageClient.storage.from(DOCUMENTS_BUCKET).download(normalizedPath);
   if (!error && data) {
     const bytes = await data.arrayBuffer();
     return new Uint8Array(bytes);
@@ -446,11 +482,13 @@ export async function downloadDocumentBytes(path: string): Promise<Uint8Array> {
   console.error('Storage download falhou', {
     rawPath: path,
     normalizedPath,
+    forceAnon: Boolean(options?.forceAnon),
+    context: options?.context ?? null,
     storageError: error,
   });
 
   try {
-    return await downloadDocumentBytesFromSignedUrl(normalizedPath);
+    return await downloadDocumentBytesFromSignedUrl(normalizedPath, options);
   } catch (fallbackError) {
     const fallbackErrorDetails = formatStorageErrorDetails(fallbackError);
     if (storageErrorDetails.toLowerCase().includes('object not found')) {
@@ -464,18 +502,27 @@ export async function downloadDocumentBytes(path: string): Promise<Uint8Array> {
   }
 }
 
-export async function createSignedDocumentUrl(path: string, expiresInSeconds = 900): Promise<string> {
+export async function createSignedDocumentUrl(
+  path: string,
+  expiresInSeconds = 900,
+  options?: StorageReadOptions,
+): Promise<string> {
   const normalizedPath = normalizeStoragePath(path);
   if (!normalizedPath) {
     throw new Error('Caminho do Storage inválido para gerar link temporário.');
   }
 
-  const { data, error } = await supabase.storage.from(DOCUMENTS_BUCKET).createSignedUrl(normalizedPath, expiresInSeconds);
+  const storageClient = getStorageReadClient(options);
+  const { data, error } = await storageClient.storage
+    .from(DOCUMENTS_BUCKET)
+    .createSignedUrl(normalizedPath, expiresInSeconds);
   if (error || !data?.signedUrl) {
     const storageErrorDetails = formatStorageErrorDetails(error ?? 'signedUrl ausente');
     console.error('Storage createSignedUrl falhou', {
       rawPath: path,
       normalizedPath,
+      forceAnon: Boolean(options?.forceAnon),
+      context: options?.context ?? null,
       storageError: error,
     });
 

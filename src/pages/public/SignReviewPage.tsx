@@ -12,6 +12,7 @@ import {
   buildRequestDocumentPath,
   createSignedDocumentUrl,
   downloadDocumentBytes,
+  getCurrentSession,
   getPublicReviewRequest,
   listPublicReviewDocuments,
   signPublicRequest,
@@ -72,6 +73,17 @@ export function SignReviewPage() {
     const load = async () => {
       setDocumentAvailability({});
       try {
+        try {
+          const session = await getCurrentSession();
+          console.info('[PublicReview] contexto de auth no navegador', {
+            role: session?.user ? 'authenticated' : 'anon',
+            userId: session?.user?.id ?? null,
+            tokenPreview: normalizedToken.slice(0, 8),
+          });
+        } catch (sessionError) {
+          console.warn('[PublicReview] falha ao obter sessão local', sessionError);
+        }
+
         const [requestData, documentsData] = await Promise.all([
           getPublicReviewRequest(normalizedToken),
           listPublicReviewDocuments(normalizedToken),
@@ -109,11 +121,17 @@ export function SignReviewPage() {
             }
 
             try {
-              await createSignedDocumentUrl(document.signed_professional_pdf_path, 60);
+              await createSignedDocumentUrl(document.signed_professional_pdf_path, 60, {
+                forceAnon: true,
+                context: 'public-review:availability',
+              });
               return [document.id, true] as const;
             } catch {
               try {
-                await downloadDocumentBytes(document.signed_professional_pdf_path);
+                await downloadDocumentBytes(document.signed_professional_pdf_path, {
+                  forceAnon: true,
+                  context: 'public-review:availability-fallback',
+                });
                 return [document.id, true] as const;
               } catch {
                 return [document.id, false] as const;
@@ -171,13 +189,19 @@ export function SignReviewPage() {
       return;
     }
     try {
-      const signedUrl = await createSignedDocumentUrl(document.signed_professional_pdf_path, 1200);
+      const signedUrl = await createSignedDocumentUrl(document.signed_professional_pdf_path, 1200, {
+        forceAnon: true,
+        context: 'public-review:open',
+      });
       window.open(signedUrl, '_blank', 'noopener,noreferrer');
       setErrorMessage(null);
     } catch (error) {
       const primaryMessage = error instanceof Error ? error.message : 'Não foi possível abrir o PDF.';
       try {
-        const bytes = await downloadDocumentBytes(document.signed_professional_pdf_path);
+        const bytes = await downloadDocumentBytes(document.signed_professional_pdf_path, {
+          forceAnon: true,
+          context: 'public-review:open-fallback',
+        });
         const safeBytes = new Uint8Array(bytes.byteLength);
         safeBytes.set(bytes);
         const blobUrl = URL.createObjectURL(new Blob([safeBytes.buffer], { type: 'application/pdf' }));
@@ -197,14 +221,20 @@ export function SignReviewPage() {
       return;
     }
     try {
-      const signedUrl = await createSignedDocumentUrl(document.signed_professional_pdf_path, 1200);
+      const signedUrl = await createSignedDocumentUrl(document.signed_professional_pdf_path, 1200, {
+        forceAnon: true,
+        context: 'public-review:preview',
+      });
       setPreviewDocumentId(document.id);
       setPreviewUrl(signedUrl, false);
       setErrorMessage(null);
     } catch (error) {
       const primaryMessage = error instanceof Error ? error.message : 'Não foi possível visualizar o PDF.';
       try {
-        const bytes = await downloadDocumentBytes(document.signed_professional_pdf_path);
+        const bytes = await downloadDocumentBytes(document.signed_professional_pdf_path, {
+          forceAnon: true,
+          context: 'public-review:preview-fallback',
+        });
         const safeBytes = new Uint8Array(bytes.byteLength);
         safeBytes.set(bytes);
         const blobUrl = URL.createObjectURL(new Blob([safeBytes.buffer], { type: 'application/pdf' }));
@@ -263,7 +293,10 @@ export function SignReviewPage() {
 
         let sourceBytes: Uint8Array;
         try {
-          sourceBytes = await downloadDocumentBytes(document.signed_professional_pdf_path);
+          sourceBytes = await downloadDocumentBytes(document.signed_professional_pdf_path, {
+            forceAnon: true,
+            context: 'public-review:sign-source',
+          });
         } catch (error) {
           const message = error instanceof Error ? error.message : 'Falha ao carregar arquivo no Storage.';
           throw new Error(`Não foi possível carregar o PDF do documento "${document.title}": ${message}`);
