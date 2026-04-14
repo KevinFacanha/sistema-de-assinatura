@@ -3,6 +3,7 @@ import { useNavigate, useParams } from 'react-router-dom';
 
 import { PdfViewer } from '../../components/pdf/PdfViewer';
 import { Alert, Button, Card, PageHeader, Stepper, SummaryCard } from '../../components/ui';
+import { buildProfessionalSignatureLabel } from '../../lib/professionalDisplayName';
 import type { SignRequest, SignRequestDocument } from '../../lib/requests';
 import {
   createSignedDocumentUrl,
@@ -11,22 +12,6 @@ import {
   listRequestDocuments,
   signRequestAsProfessional,
 } from '../../lib/requests';
-
-function formatDateTimeWithSeconds(date = new Date()): string {
-  return new Intl.DateTimeFormat('pt-BR', {
-    day: '2-digit',
-    month: '2-digit',
-    year: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-    hour12: false,
-  }).format(date);
-}
-
-function formatSignature(name: string) {
-  return `Assinado por ${name} em ${formatDateTimeWithSeconds()}`;
-}
 
 export function RequestSignPage() {
   const { id } = useParams();
@@ -72,7 +57,7 @@ export function RequestSignPage() {
 
     try {
       const signer = await getCurrentProfessionalDisplayName();
-      await signRequestAsProfessional(id, formatSignature(signer));
+      await signRequestAsProfessional(id, buildProfessionalSignatureLabel(signer));
       navigate(`/requests/${id}`);
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Não foi possível assinar.';

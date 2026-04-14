@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useNavigate } from 'react-router-dom';
 
-import { getCurrentProfessionalDisplayName, getCurrentProfessionalProfile, signOutProfessional } from '../../lib/requests';
+import { getCurrentProfessionalDisplayName, signOutProfessional } from '../../lib/requests';
 import { Button } from '../ui';
 
 export function Topbar() {
@@ -12,12 +12,6 @@ export function Topbar() {
   useEffect(() => {
     const loadSession = async () => {
       try {
-        const profile = await getCurrentProfessionalProfile();
-        if (profile?.full_name) {
-          setDisplayName(profile.full_name);
-          return;
-        }
-
         const name = await getCurrentProfessionalDisplayName();
         setDisplayName(name);
       } catch {

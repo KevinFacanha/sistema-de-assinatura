@@ -2,6 +2,7 @@ import { createClient, type Session, type SupabaseClient, type User } from '@sup
 
 import { getClientMeta } from './clientMeta';
 import { appendSignaturePage } from './pdfSigning';
+import { resolveProfessionalDisplayName } from './professionalDisplayName';
 import { generateSignToken, sha256Hex, sha256HexFromBytes } from './security';
 import { getSupabaseConfigSummary, supabase } from './supabase';
 
@@ -315,30 +316,6 @@ function toRpcMeta(routeOrOrigin: string): RpcMetaParams {
   };
 }
 
-function toNonEmptyString(value: unknown): string | null {
-  if (typeof value !== 'string') {
-    return null;
-  }
-  const trimmed = value.trim();
-  return trimmed.length > 0 ? trimmed : null;
-}
-
-function resolveProfessionalDisplayNameFromSources(
-  profileFullName: string | null,
-  user: User | null,
-): string {
-  const metadata = user?.user_metadata as Record<string, unknown> | undefined;
-
-  return (
-    toNonEmptyString(profileFullName) ??
-    toNonEmptyString(metadata?.full_name) ??
-    toNonEmptyString(metadata?.name) ??
-    toNonEmptyString(metadata?.display_name) ??
-    toNonEmptyString(user?.email) ??
-    'Profissional'
-  );
-}
-
 async function requireUser(): Promise<User> {
   const {
     data: { user },
@@ -625,11 +602,11 @@ export async function getCurrentProfessionalDisplayName(): Promise<string> {
 
   const { data, error } = await supabase.from('profiles').select('full_name').eq('id', user.id).maybeSingle();
   if (error) {
-    return resolveProfessionalDisplayNameFromSources(null, user);
+    return resolveProfessionalDisplayName(null, user);
   }
 
   const profileFullName = (data as { full_name?: string } | null)?.full_name ?? null;
-  return resolveProfessionalDisplayNameFromSources(profileFullName, user);
+  return resolveProfessionalDisplayName(profileFullName, user);
 }
 
 export function onAuthStateChange(callback: (session: Session | null) => void) {
