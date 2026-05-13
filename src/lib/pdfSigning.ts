@@ -9,6 +9,10 @@ type WidthMeasurableFont = {
   widthOfTextAtSize: (text: string, size: number) => number;
 };
 
+function normalizePdfText(value: string): string {
+  return value.normalize('NFC');
+}
+
 function normalizePdfBytes(input: ArrayBuffer | Uint8Array): Uint8Array {
   if (input instanceof Uint8Array) {
     return input;
@@ -22,11 +26,12 @@ function splitLongTokenByWidth(
   fontSize: number,
   maxWidth: number,
 ): string[] {
-  if (!token) return [''];
+  const normalizedToken = normalizePdfText(token);
+  if (!normalizedToken) return [''];
   const chunks: string[] = [];
   let currentChunk = '';
 
-  for (const char of token) {
+  for (const char of normalizedToken) {
     const candidate = currentChunk + char;
     if (font.widthOfTextAtSize(candidate, fontSize) <= maxWidth) {
       currentChunk = candidate;
@@ -42,13 +47,14 @@ function splitLongTokenByWidth(
     chunks.push(currentChunk);
   }
 
-  return chunks.length > 0 ? chunks : [token];
+  return chunks.length > 0 ? chunks : [normalizedToken];
 }
 
 function wrapLineByWidth(line: string, font: WidthMeasurableFont, fontSize: number, maxWidth: number): string[] {
-  if (!line) return [''];
+  const normalizedLine = normalizePdfText(line);
+  if (!normalizedLine) return [''];
 
-  const words = line.split(' ');
+  const words = normalizedLine.split(' ');
   const wrappedLines: string[] = [];
   let currentLine = '';
 
@@ -85,6 +91,9 @@ export async function appendSignaturePage(
 ): Promise<Uint8Array> {
   const pdfDoc = await PDFDocument.load(normalizePdfBytes(basePdfBytes));
   const page = pdfDoc.addPage([595.28, 841.89]);
+  const normalizedTitle = normalizePdfText(signaturePage.title);
+  const normalizedSubtitle = normalizePdfText('Registro de assinaturas do documento');
+  const normalizedLines = signaturePage.lines.map(normalizePdfText);
 
   const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
   const bold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
@@ -98,7 +107,7 @@ export async function appendSignaturePage(
     borderWidth: 1,
   });
 
-  page.drawText(signaturePage.title, {
+  page.drawText(normalizedTitle, {
     x: 48,
     y: page.getHeight() - 72,
     size: 18,
@@ -106,7 +115,7 @@ export async function appendSignaturePage(
     color: rgb(0.1, 0.17, 0.24),
   });
 
-  page.drawText('Registro de assinaturas do documento', {
+  page.drawText(normalizedSubtitle, {
     x: 48,
     y: page.getHeight() - 94,
     size: 10,
@@ -119,7 +128,7 @@ export async function appendSignaturePage(
   const lineHeight = 14;
   let cursorY = page.getHeight() - 130;
 
-  for (const line of signaturePage.lines) {
+  for (const line of normalizedLines) {
     const wrappedLines = wrapLineByWidth(line, font, bodyFontSize, maxTextWidth);
 
     for (const wrappedLine of wrappedLines) {
@@ -136,7 +145,7 @@ export async function appendSignaturePage(
     cursorY -= 6;
   }
 
-  const footerText = `Gerado em ${new Date().toLocaleString('pt-BR')}`;
+  const footerText = normalizePdfText(`Gerado em ${new Date().toLocaleString('pt-BR')}`);
   page.drawText(footerText, {
     x: 48,
     y: 48,
