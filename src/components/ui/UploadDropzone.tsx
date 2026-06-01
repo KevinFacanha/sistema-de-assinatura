@@ -11,9 +11,9 @@ type UploadDropzoneProps = {
 };
 
 export function UploadDropzone({
-  label = 'Documento PDF',
+  label = 'Documento PDF, Excel ou Word',
   helperText = 'Arraste o arquivo ou clique para selecionar.',
-  accept = 'application/pdf',
+  accept = 'application/pdf,.pdf,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,.xlsx,application/vnd.ms-excel,.xls,application/vnd.openxmlformats-officedocument.wordprocessingml.document,.docx,application/msword,.doc',
   className,
   onFileSelect,
 }: UploadDropzoneProps) {
@@ -33,7 +33,7 @@ export function UploadDropzone({
         htmlFor={inputId}
         className="flex cursor-pointer flex-col items-center justify-center gap-1 rounded-lg border border-dashed border-border-soft bg-surface-1 p-6 text-center transition duration-150 ease-smooth hover:border-brand-secondary hover:bg-white"
       >
-        <span className="text-sm font-medium text-text-strong">Selecionar PDF</span>
+        <span className="text-sm font-medium text-text-strong">Selecionar arquivo</span>
         <span className="text-xs text-text-muted">{helperText}</span>
         <span className="mt-2 rounded-md bg-white px-2 py-1 text-xs text-text-muted">{fileName}</span>
       </label>

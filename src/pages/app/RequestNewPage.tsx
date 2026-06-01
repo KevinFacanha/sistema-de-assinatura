@@ -3,6 +3,7 @@ import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 
 import { Alert, Button, Card, Checkbox, Input, PageHeader, SectionHeader, Select, Stepper, Textarea, UploadDropzone } from '../../components/ui';
+import { ensurePdfFileForSigning, getSupportedUploadKind, SUPPORTED_DOCUMENT_ACCEPT } from '../../lib/excelToPdf';
 import { createProfessionalRequest } from '../../lib/requests';
 import { generateAccessCode, generateSignToken } from '../../lib/security';
 
@@ -69,12 +70,18 @@ export function RequestNewPage() {
     });
   };
 
-  const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
+  const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (documents.length === 0) {
-      setErrorMessage('Adicione pelo menos um documento PDF.');
+      setErrorMessage('Adicione pelo menos um documento PDF, Excel ou Word.');
       return;
     }
+
+    const validatedDocuments: Array<{
+      document: DocumentDraft;
+      file: File;
+      index: number;
+    }> = [];
 
     for (const [index, document] of documents.entries()) {
       if (!document.documentType || !document.title.trim() || !document.file) {
@@ -82,62 +89,81 @@ export function RequestNewPage() {
         return;
       }
 
-      if (document.file.type && document.file.type !== 'application/pdf') {
-        setErrorMessage(`Somente PDF é permitido no documento ${index + 1}.`);
+      if (!getSupportedUploadKind(document.file)) {
+        setErrorMessage(`Formato não suportado no documento ${index + 1}. Envie um arquivo PDF, XLSX, XLS, DOCX ou DOC.`);
         return;
       }
+
+      validatedDocuments.push({
+        document,
+        file: document.file,
+        index,
+      });
     }
 
     setSubmitting(true);
     setErrorMessage(null);
 
-    const documentSnapshot = [
-      `Paciente: ${patientName}`,
-      `Telefone: ${patientPhone}`,
-      ...documents.map((document, index) => {
-        const typeLabel = documentTypeOptions.find((item) => item.value === document.documentType)?.label ?? document.documentType;
-        return `Documento ${index + 1}: ${typeLabel} | ${document.title} | ${document.file?.name ?? 'arquivo.pdf'}`;
-      }),
-      `Observações: ${notes || 'Sem observações adicionais.'}`,
-    ].join('\n');
+    try {
+      const preparedDocuments: Array<{
+        document: DocumentDraft;
+        pdfFile: File;
+        index: number;
+      }> = [];
 
-    const signToken = generateSignToken();
-    const accessCode = generateAccessCode();
+      for (const { document, file, index } of validatedDocuments) {
+        try {
+          const pdfFile = await ensurePdfFileForSigning(file);
+          preparedDocuments.push({ document, pdfFile, index });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : 'Não foi possível preparar o arquivo para assinatura.';
+          throw new Error(`Documento ${index + 1}: ${message}`);
+        }
+      }
 
-    createProfessionalRequest({
-      patientName,
-      patientPhone,
-      patientEmail: patientEmail || undefined,
-      documentTitle: documents[0]?.title ?? 'Documentos da solicitação',
-      documentSnapshot,
-      signToken,
-      accessCode,
-      documents: documents
-        .filter((document) => Boolean(document.file))
-        .map((document) => ({
+      const documentSnapshot = [
+        `Paciente: ${patientName}`,
+        `Telefone: ${patientPhone}`,
+        ...preparedDocuments.map(({ document, pdfFile, index }) => {
+          const typeLabel = documentTypeOptions.find((item) => item.value === document.documentType)?.label ?? document.documentType;
+          return `Documento ${index + 1}: ${typeLabel} | ${document.title} | ${pdfFile.name}`;
+        }),
+        `Observações: ${notes || 'Sem observações adicionais.'}`,
+      ].join('\n');
+
+      const signToken = generateSignToken();
+      const accessCode = generateAccessCode();
+
+      const created = await createProfessionalRequest({
+        patientName,
+        patientPhone,
+        patientEmail: patientEmail || undefined,
+        documentTitle: documents[0]?.title ?? 'Documentos da solicitação',
+        documentSnapshot,
+        signToken,
+        accessCode,
+        documents: preparedDocuments.map(({ document, pdfFile }) => ({
           documentType: document.documentType,
           title: document.title.trim(),
           isRequired: document.isRequired,
-          pdfFile: document.file as File,
+          pdfFile,
         })),
-    })
-      .then((created) => {
-        navigate(`/requests/${created.id}/sign`);
-      })
-      .catch((error: unknown) => {
-        const message = error instanceof Error ? error.message : 'Não foi possível criar a solicitação.';
-        setErrorMessage(message);
-      })
-      .finally(() => {
-        setSubmitting(false);
       });
+
+      navigate(`/requests/${created.id}/sign`);
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'Não foi possível criar a solicitação.';
+      setErrorMessage(message);
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   return (
     <div className="space-y-6">
       <PageHeader
         title="Nova solicitação"
-        description="Cadastre o paciente, adicione um ou mais PDFs e avance para assinatura profissional."
+        description="Cadastre o paciente, adicione um ou mais documentos em PDF, Excel ou Word e avance para assinatura profissional."
         className="rounded-xl border border-border-soft bg-white px-5 py-4 shadow-sm"
       />
 
@@ -195,7 +221,7 @@ export function RequestNewPage() {
           </Card>
 
           <Card className="space-y-4 border border-border-soft bg-white shadow-sm">
-            <SectionHeader title="Documentos" subtitle="Inclua todos os PDFs da solicitação em um único fluxo." />
+            <SectionHeader title="Documentos" subtitle="Inclua PDFs, planilhas Excel ou arquivos Word; o fluxo de assinatura continuará em PDF." />
             <div className="space-y-4">
               {documents.map((document, index) => (
                 <div
@@ -276,6 +302,8 @@ export function RequestNewPage() {
                   </div>
 
                   <UploadDropzone
+                    accept={SUPPORTED_DOCUMENT_ACCEPT}
+                    helperText="Formatos aceitos: PDF, XLSX, XLS, DOCX ou DOC."
                     onFileSelect={(file) =>
                       updateDocument(document.id, (current) => ({
                         ...current,
@@ -321,7 +349,7 @@ export function RequestNewPage() {
               </p>
               <ul className="space-y-2 text-xs text-text-muted">
                 <li className="rounded-md bg-white px-2.5 py-2">1. Preencher dados do paciente</li>
-                <li className="rounded-md bg-white px-2.5 py-2">2. Anexar um ou mais PDFs</li>
+                <li className="rounded-md bg-white px-2.5 py-2">2. Anexar um ou mais documentos</li>
                 <li className="rounded-md bg-white px-2.5 py-2">3. Assinar e compartilhar link</li>
               </ul>
             </Card>
@@ -333,7 +361,7 @@ export function RequestNewPage() {
                   Documentos: <span className="font-semibold text-text-strong">{documents.length}</span>
                 </p>
                 <p>
-                  Campos obrigatórios: <span className="font-semibold text-text-strong">Paciente + PDF</span>
+                  Campos obrigatórios: <span className="font-semibold text-text-strong">Paciente + arquivo</span>
                 </p>
               </div>
             </Card>
